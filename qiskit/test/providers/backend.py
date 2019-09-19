@@ -1,15 +1,22 @@
 # -*- coding: utf-8 -*-
 
-# Copyright 2019, IBM.
+# This code is part of Qiskit.
 #
-# This source code is licensed under the Apache License, Version 2.0 found in
-# the LICENSE.txt file in the root directory of this source tree.
+# (C) Copyright IBM 2017, 2019.
+#
+# This code is licensed under the Apache License, Version 2.0. You may
+# obtain a copy of this license in the LICENSE.txt file in the root directory
+# of this source tree or at http://www.apache.org/licenses/LICENSE-2.0.
+#
+# Any modifications or derivative works of this code must retain this
+# copyright notice, and modified files need to carry a notice indicating
+# that they have been altered from the originals.
 
 """Base TestCase for testing backends."""
 
 from unittest import SkipTest
 
-from qiskit.tools.compiler import compile  # pylint: disable=redefined-builtin
+from qiskit import execute
 from ..base import QiskitTestCase
 from ..reference_circuits import ReferenceCircuits
 
@@ -63,8 +70,7 @@ class BackendTestCase(QiskitTestCase):
 
     def test_run_circuit(self):
         """Test running a single circuit."""
-        qobj = compile(self.circuit, self.backend)
-        job = self.backend.run(qobj)
+        job = execute(self.circuit, self.backend)
         result = job.result()
         self.assertEqual(result.success, True)
         return result

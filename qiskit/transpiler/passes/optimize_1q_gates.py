@@ -1,9 +1,16 @@
 # -*- coding: utf-8 -*-
 
-# Copyright 2018, IBM.
+# This code is part of Qiskit.
 #
-# This source code is licensed under the Apache License, Version 2.0 found in
-# the LICENSE.txt file in the root directory of this source tree.
+# (C) Copyright IBM 2017, 2018.
+#
+# This code is licensed under the Apache License, Version 2.0. You may
+# obtain a copy of this license in the LICENSE.txt file in the root directory
+# of this source tree or at http://www.apache.org/licenses/LICENSE-2.0.
+#
+# Any modifications or derivative works of this code must retain this
+# copyright notice, and modified files need to carry a notice indicating
+# that they have been altered from the originals.
 
 
 """
@@ -11,51 +18,46 @@ Transpiler pass to optimize chains of single-qubit u1, u2, u3 gates by combining
 a single gate.
 """
 
-import networkx as nx
+from itertools import groupby
+
 import numpy as np
 
-from qiskit.mapper import MapperError
+from qiskit.transpiler.exceptions import TranspilerError
 from qiskit.extensions.standard.u1 import U1Gate
 from qiskit.extensions.standard.u2 import U2Gate
 from qiskit.extensions.standard.u3 import U3Gate
-from qiskit.circuit.instruction import Instruction
-from qiskit.transpiler._basepasses import TransformationPass
+from qiskit.circuit.gate import Gate
+from qiskit.transpiler.basepasses import TransformationPass
 from qiskit.quantum_info.operators.quaternion import quaternion_from_euler
-from qiskit.transpiler.passes.unroller import Unroller
-
+from qiskit.dagcircuit import DAGCircuit
+from qiskit.circuit import QuantumRegister, ParameterExpression
 
 _CHOP_THRESHOLD = 1e-15
 
 
 class Optimize1qGates(TransformationPass):
     """Simplify runs of single qubit gates in the ["u1", "u2", "u3", "cx", "id"] basis."""
-
-    def __init__(self):
-        super().__init__()
-        self.requires.append(Unroller(["u1", "u2", "u3", "cx", "id"]))
-
     def run(self, dag):
         """Return a new circuit that has been optimized."""
-        runs = dag.collect_runs(["u1", "u2", "u3", "id"])
+        runs = dag.collect_runs(["u1", "u2", "u3"])
+        runs = _split_runs_on_parameters(runs)
         for run in runs:
-            run_qarg = dag.multi_graph.node[run[0]]["qargs"][0]
             right_name = "u1"
             right_parameters = (0, 0, 0)  # (theta, phi, lambda)
 
             for current_node in run:
-                node = dag.multi_graph.node[current_node]
-                left_name = node["name"]
-                if (node["condition"] is not None
-                        or len(node["qargs"]) != 1
-                        or node["qargs"][0] != run_qarg
+                left_name = current_node.name
+                if (current_node.condition is not None
+                        or len(current_node.qargs) != 1
                         or left_name not in ["u1", "u2", "u3", "id"]):
-                    raise MapperError("internal error")
+                    raise TranspilerError("internal error")
                 if left_name == "u1":
-                    left_parameters = (0, 0, node["op"].params[0])
+                    left_parameters = (0, 0, current_node.op.params[0])
                 elif left_name == "u2":
-                    left_parameters = (np.pi / 2, node["op"].params[0], node["op"].params[1])
+                    left_parameters = (np.pi / 2, current_node.op.params[0],
+                                       current_node.op.params[1])
                 elif left_name == "u3":
-                    left_parameters = tuple(node["op"].params)
+                    left_parameters = tuple(current_node.op.params)
                 else:
                     left_name = "u1"  # replace id with u1
                     left_parameters = (0, 0, 0)
@@ -163,23 +165,30 @@ class Optimize1qGates(TransformationPass):
                 if right_name == "u1" and np.mod(right_parameters[2], (2 * np.pi)) == 0:
                     right_name = "nop"
 
-            # Replace the data of the first node in the run
-            new_op = Instruction("", [], [], [])
+            # Replace the the first node in the run with a dummy DAG which contains a dummy
+            # qubit. The name is irrelevant, because substitute_node_with_dag will take care of
+            # putting it in the right place.
+            run_qarg = QuantumRegister(1, 'q')[0]
+            new_op = Gate(name="", num_qubits=1, params=[])
             if right_name == "u1":
-                new_op = U1Gate(right_parameters[2], run_qarg)
+                new_op = U1Gate(right_parameters[2])
             if right_name == "u2":
-                new_op = U2Gate(right_parameters[1], right_parameters[2], run_qarg)
+                new_op = U2Gate(right_parameters[1], right_parameters[2])
             if right_name == "u3":
-                new_op = U3Gate(*right_parameters, run_qarg)
-            nx.set_node_attributes(dag.multi_graph, name='name',
-                                   values={run[0]: right_name})
-            nx.set_node_attributes(dag.multi_graph, name='op',
-                                   values={run[0]: new_op})
+                new_op = U3Gate(*right_parameters)
+
+            if right_name != 'nop':
+                new_dag = DAGCircuit()
+                new_dag.add_qreg(run_qarg.register)
+                new_dag.apply_operation_back(new_op, [run_qarg], [])
+                dag.substitute_node_with_dag(run[0], new_dag)
+
             # Delete the other nodes in the run
             for current_node in run[1:]:
-                dag._remove_op_node(current_node)
+                dag.remove_op_node(current_node)
             if right_name == "nop":
-                dag._remove_op_node(run[0])
+                dag.remove_op_node(run[0])
+
         return dag
 
     @staticmethod
@@ -221,7 +230,26 @@ class Optimize1qGates(TransformationPass):
         out_angles = (euler[1], euler[0], euler[2])
         abs_inner = abs(quaternion_zyz.data.dot(quaternion_yzy.data))
         if not np.allclose(abs_inner, 1, eps):
-            raise MapperError('YZY and ZYZ angles do not give same rotation matrix.')
+            raise TranspilerError('YZY and ZYZ angles do not give same rotation matrix.')
         out_angles = tuple(0 if np.abs(angle) < _CHOP_THRESHOLD else angle
                            for angle in out_angles)
         return out_angles
+
+
+def _split_runs_on_parameters(runs):
+    """Finds runs containing parameterized gates and splits them into sequential
+    runs excluding the parameterized gates.
+    """
+
+    def _is_dagnode_parameterized(node):
+        return any(isinstance(param, ParameterExpression) for param in node.op.params)
+
+    out = []
+    for run in runs:
+        groups = groupby(run, _is_dagnode_parameterized)
+
+        for group_is_parameterized, gates in groups:
+            if not group_is_parameterized:
+                out.append(list(gates))
+
+    return out

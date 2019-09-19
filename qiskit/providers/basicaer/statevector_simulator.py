@@ -1,12 +1,17 @@
 # -*- coding: utf-8 -*-
 
-# Copyright 2017, IBM.
+# This code is part of Qiskit.
 #
-# This source code is licensed under the Apache License, Version 2.0 found in
-# the LICENSE.txt file in the root directory of this source tree.
+# (C) Copyright IBM 2017.
+#
+# This code is licensed under the Apache License, Version 2.0. You may
+# obtain a copy of this license in the LICENSE.txt file in the root directory
+# of this source tree or at http://www.apache.org/licenses/LICENSE-2.0.
+#
+# Any modifications or derivative works of this code must retain this
+# copyright notice, and modified files need to carry a notice indicating
+# that they have been altered from the originals.
 
-# pylint: disable=invalid-name
-# pylint: disable=arguments-differ
 
 """Contains a (slow) python statevector simulator.
 
@@ -22,9 +27,9 @@ The input qobj to this simulator has no shots, no measures, no reset, no noise.
 
 import logging
 from math import log2
-from qiskit._util import local_hardware_info
+from qiskit.util import local_hardware_info
 from qiskit.providers.basicaer.exceptions import BasicAerError
-from qiskit.providers.models import BackendConfiguration
+from qiskit.providers.models import QasmBackendConfiguration
 from .qasm_simulator import QasmSimulatorPy
 
 logger = logging.getLogger(__name__)
@@ -46,8 +51,9 @@ class StatevectorSimulatorPy(QasmSimulatorPy):
         'open_pulse': False,
         'memory': True,
         'max_shots': 65536,
+        'coupling_map': None,
         'description': 'A Python statevector simulator for qobj files',
-        'basis_gates': ['u1', 'u2', 'u3', 'cx', 'id', 'snapshot'],
+        'basis_gates': ['u1', 'u2', 'u3', 'cx', 'id', 'unitary'],
         'gates': [
             {
                 'name': 'u1',
@@ -75,9 +81,9 @@ class StatevectorSimulatorPy(QasmSimulatorPy):
                 'qasm_def': 'gate id a { U(0,0,0) a; }'
             },
             {
-                'name': 'snapshot',
-                'parameters': ['slot'],
-                'qasm_def': 'gate snapshot(slot) q { TODO }'
+                'name': 'unitary',
+                'parameters': ['matrix'],
+                'qasm_def': 'unitary(matrix) q1, q2,...'
             }
         ]
     }
@@ -86,8 +92,8 @@ class StatevectorSimulatorPy(QasmSimulatorPy):
     SHOW_FINAL_STATE = True
 
     def __init__(self, configuration=None, provider=None):
-        super().__init__(configuration=(configuration or
-                                        BackendConfiguration.from_dict(self.DEFAULT_CONFIGURATION)),
+        super().__init__(configuration=(
+            configuration or QasmBackendConfiguration.from_dict(self.DEFAULT_CONFIGURATION)),
                          provider=provider)
 
     def run(self, qobj, backend_options=None):
@@ -111,7 +117,7 @@ class StatevectorSimulatorPy(QasmSimulatorPy):
             zero state. This size of this vector must be correct for the number
             of qubits in all experiments in the qobj.
 
-            The "chop_threshold" option specifies a trunctation value for
+            The "chop_threshold" option specifies a truncation value for
             setting small values to zero in the output statevector. The default
             value is 1e-15.
 
